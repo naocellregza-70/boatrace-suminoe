@@ -63,19 +63,21 @@ def fetch_racelist(date_str: str, race_no: int) -> list[dict]:
     # 新構造: tbody.is-fs12 が艇ごとに存在
     for tbody in soup.find_all("tbody"):
         cls = tbody.get("class") or []
-        # クラスリストに "is-fs12" が含まれているか（前後スペース等を考慮）
         if not any("is-fs12" in c for c in cls):
             continue
 
-        # 艇番: is-boatColor{N} クラスを持つ td から取得
-        boat_td = tbody.find("td", class_=lambda c: c and any("is-boatColor" in x for x in c))
-        if not boat_td:
+        # 艇番: 最初の行の最初の td から取得
+        rows = tbody.find_all("tr")
+        if not rows:
             continue
-        boat_no = _to_boat_no(boat_td.get_text(strip=True))
+        tds = rows[0].find_all("td")
+        if len(tds) < 3:
+            continue
+        boat_no = _to_boat_no(tds[0].get_text(strip=True))
         if not boat_no:
             continue
 
-        # 選手名: div.is-fs18 の <a> タグから直接取得（最も確実）
+        # 選手名: div.is-fs18 の <a> タグから直接取得
         name = ""
         name_div = tbody.find("div", class_="is-fs18")
         if name_div:
@@ -85,17 +87,13 @@ def fetch_racelist(date_str: str, race_no: int) -> list[dict]:
 
         # 名前が取れない場合は正規表現フォールバック
         if not name:
-            td2_el = None
             for td in tbody.find_all("td"):
                 t = td.get_text(" ", strip=True)
                 if re.search(r'[A-Z]\d', t) and "歳" in t:
-                    td2_el = td
-                    break
-            if td2_el:
-                td2 = td2_el.get_text(" ", strip=True)
-                m = re.search(r'[A-Z]\d\s+(.+?)\s+\S+/\S+\s+\d+歳', td2)
-                if m:
-                    name = m.group(1).strip()
+                    m = re.search(r'[A-Z]\d\s+(.+?)\s+\S+/\S+\s+\d+歳', t)
+                    if m:
+                        name = m.group(1).strip()
+                        break
 
         # 級別: span テキストから取得
         grade = ""
@@ -105,37 +103,28 @@ def fetch_racelist(date_str: str, race_no: int) -> list[dict]:
                 grade = t
                 break
 
-        # 残りのデータは各行の td テキストから
-        rows = tbody.find_all("tr")
-        if not rows:
-            continue
-        tds = rows[0].find_all("td")
-
-        # td[3]: "F0 L0 0.13" → 平均ST
+        # td[3]: ST / td[4]: 全国 / td[5]: 当地 / td[6]: モーター
         td3 = tds[3].get_text(" ", strip=True) if len(tds) > 3 else ""
         nums3 = re.findall(r'[\d.]+', td3.replace("F","").replace("L",""))
         st_avg = float(nums3[-1]) if nums3 else 0.18
 
-        # td[4]: "7.19 50.44 69.03" → 全国勝率・2連率・3連率
         td4 = tds[4].get_text(" ", strip=True) if len(tds) > 4 else ""
         nums4 = re.findall(r'\d+\.\d+', td4)
-        national_win  = float(nums4[0]) if len(nums4) > 0 else 0.0
+        national_win = float(nums4[0]) if nums4 else 0.0
 
-        # td[5]: "6.61 47.71 59.63" → 当地勝率・2連率・3連率
         td5 = tds[5].get_text(" ", strip=True) if len(tds) > 5 else ""
         nums5 = re.findall(r'\d+\.\d+', td5)
-        local_win = float(nums5[0]) if len(nums5) > 0 else 0.0
+        local_win = float(nums5[0]) if nums5 else 0.0
 
-        # td[6]: "51 50.00 50.00" → モーター番号・2連率・3連率
         td6 = tds[6].get_text(" ", strip=True) if len(tds) > 6 else ""
         nums6 = re.findall(r'\d+\.\d+', td6)
-        motor_rate = float(nums6[0]) if len(nums6) > 0 else 0.0
+        motor_rate = float(nums6[0]) if nums6 else 0.0
 
         boats.append(dict(
             boat_no=boat_no,
             name=name or f"選手{boat_no}",
             grade=grade,
-            course=boat_no,       # 直前情報で上書き
+            course=boat_no,
             national_win=national_win,
             national_rate=0.0,
             local_win=local_win,
@@ -187,10 +176,10 @@ def _parse_tds_legacy(boat_no: int, tds) -> dict | None:
             if re.match(r"^\d+\.\d{2}$", t):
                 nums.append(float(t))
 
-        national_win  = nums[0] if len(nums) > 0 else 0.0
-        local_win     = nums[3] if len(nums) > 3 else 0.0
-        motor_rate    = nums[6] if len(nums) > 6 else 0.0
-        st_avg        = nums[10] if len(nums) > 10 else 0.18
+        national_win = nums[0] if len(nums) > 0 else 0.0
+        local_win    = nums[3] if len(nums) > 3 else 0.0
+        motor_rate   = nums[6] if len(nums) > 6 else 0.0
+        st_avg       = nums[10] if len(nums) > 10 else 0.18
         if st_avg > 1.0:
             st_avg = 0.18
 
@@ -226,7 +215,6 @@ def fetch_beforeinfo(date_str: str, race_no: int, boats: list[dict]) -> list[dic
     if not soup:
         return boats
 
-    # --- 展示タイム: is-fs12 tbody ---
     ex_times = {}
     for tbody in soup.find_all("tbody"):
         cls = tbody.get("class") or []
@@ -238,13 +226,10 @@ def fetch_beforeinfo(date_str: str, race_no: int, boats: list[dict]) -> list[dic
         boat_no = _to_boat_no(tds[0].get_text(strip=True))
         if not boat_no:
             continue
-        # td[4] が展示タイム (例: "6.87")
         ex_t = _safe_float(tds[4].get_text(strip=True))
         if 5.0 <= ex_t <= 9.0:
             ex_times[boat_no] = ex_t
 
-    # --- 展示ST: is-p10-0 tbody ---
-    # 各td: "1 .02", "2 F.02", ... → コース番号と展示ST
     ex_sts = {}
     p10 = soup.find("tbody", class_="is-p10-0")
     if p10:
@@ -257,7 +242,6 @@ def fetch_beforeinfo(date_str: str, race_no: int, boats: list[dict]) -> list[dic
                 if 0.0 <= st_val <= 0.99:
                     ex_sts[course] = st_val
 
-    # boats に反映（courseはデフォルトのまま艇番と一致と仮定）
     for b in boats:
         bn = b["boat_no"]
         if bn in ex_times:
@@ -279,7 +263,6 @@ def fetch_result(date_str: str, race_no: int) -> dict | None:
 
     rank_map = {}
 
-    # 新構造: is-fs12
     for tbody in soup.find_all("tbody"):
         cls = tbody.get("class") or []
         if not any("is-fs12" in c for c in cls):
@@ -287,7 +270,6 @@ def fetch_result(date_str: str, race_no: int) -> dict | None:
         tds = tbody.find_all("td")
         if not tds:
             continue
-        # 結果ページでは td[0] が着順、td[1] か td[2] が艇番
         rank_text = tds[0].get_text(strip=True)
         if rank_text in ["1", "2", "3"]:
             for td in tds[1:]:
@@ -296,7 +278,6 @@ def fetch_result(date_str: str, race_no: int) -> dict | None:
                     rank_map[int(rank_text)] = int(t)
                     break
 
-    # 旧構造フォールバック
     if not rank_map:
         for n in range(1, 7):
             tbody = soup.find("tbody", class_=f"is-boatColor{n}")
@@ -308,7 +289,6 @@ def fetch_result(date_str: str, race_no: int) -> dict | None:
                     rank_map[int(t)] = n
                     break
 
-    # テーブル全行フォールバック
     if not rank_map:
         for tbl in soup.find_all("table"):
             for row in tbl.find_all("tr"):
