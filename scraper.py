@@ -55,10 +55,15 @@ def fetch_racelist(date_str: str, race_no: int) -> list[dict]:
     """出走表を取得。戻り値: 艇ごとのdict リスト（最大6艇）"""
     url = f"{BASE}/racelist?rno={race_no}&jcd={VENUE}&hd={date_str}"
     soup = _get(url)
+    print(f"[DBG] fetch_racelist url={url} soup_none={soup is None}")
     if not soup:
         return []
 
     boats = []
+
+    # デバッグ: tbody クラスを出力
+    all_cls = [str(tb.get("class")) for tb in soup.find_all("tbody")]
+    print(f"[DBG] tbody count={len(all_cls)} classes={all_cls[:8]}")
 
     # 新構造: tbody.is-fs12 が艇ごとに存在
     for tbody in soup.find_all("tbody"):
@@ -66,26 +71,26 @@ def fetch_racelist(date_str: str, race_no: int) -> list[dict]:
         if not any("is-fs12" in c for c in cls):
             continue
 
-        # 艇番: 最初の行の最初の td から取得
         rows = tbody.find_all("tr")
         if not rows:
             continue
         tds = rows[0].find_all("td")
+        print(f"[DBG] is-fs12 cls={cls} tds={len(tds)} t0='{tds[0].get_text(strip=True)[:10] if tds else ''}'")
         if len(tds) < 3:
             continue
         boat_no = _to_boat_no(tds[0].get_text(strip=True))
         if not boat_no:
             continue
 
-        # 選手名: div.is-fs18 の <a> タグから直接取得
         name = ""
         name_div = tbody.find("div", class_="is-fs18")
+        print(f"[DBG] boat_no={boat_no} name_div_found={name_div is not None}")
         if name_div:
             name_a = name_div.find("a")
             if name_a:
                 name = name_a.get_text(strip=True)
+        print(f"[DBG] boat_no={boat_no} name='{name}'")
 
-        # 名前が取れない場合は正規表現フォールバック
         if not name:
             for td in tbody.find_all("td"):
                 t = td.get_text(" ", strip=True)
@@ -95,7 +100,6 @@ def fetch_racelist(date_str: str, race_no: int) -> list[dict]:
                         name = m.group(1).strip()
                         break
 
-        # 級別: span テキストから取得
         grade = ""
         for span in tbody.find_all("span"):
             t = span.get_text(strip=True)
@@ -103,22 +107,23 @@ def fetch_racelist(date_str: str, race_no: int) -> list[dict]:
                 grade = t
                 break
 
-        # td[3]: ST / td[4]: 全国 / td[5]: 当地 / td[6]: モーター
         td3 = tds[3].get_text(" ", strip=True) if len(tds) > 3 else ""
         nums3 = re.findall(r'[\d.]+', td3.replace("F","").replace("L",""))
         st_avg = float(nums3[-1]) if nums3 else 0.18
 
         td4 = tds[4].get_text(" ", strip=True) if len(tds) > 4 else ""
         nums4 = re.findall(r'\d+\.\d+', td4)
-        national_win = float(nums4[0]) if nums4 else 0.0
+        national_win  = float(nums4[0]) if len(nums4) > 0 else 0.0
 
         td5 = tds[5].get_text(" ", strip=True) if len(tds) > 5 else ""
         nums5 = re.findall(r'\d+\.\d+', td5)
-        local_win = float(nums5[0]) if nums5 else 0.0
+        local_win = float(nums5[0]) if len(nums5) > 0 else 0.0
 
         td6 = tds[6].get_text(" ", strip=True) if len(tds) > 6 else ""
         nums6 = re.findall(r'\d+\.\d+', td6)
-        motor_rate = float(nums6[0]) if nums6 else 0.0
+        motor_rate = float(nums6[0]) if len(nums6) > 0 else 0.0
+
+        print(f"[DBG] boat_no={boat_no} tds_count={len(tds)} st={st_avg} nw={national_win} lw={local_win} mr={motor_rate}")
 
         boats.append(dict(
             boat_no=boat_no,
@@ -135,7 +140,8 @@ def fetch_racelist(date_str: str, race_no: int) -> list[dict]:
             ex_st=st_avg,
         ))
 
-    # フォールバック: 旧構造（is-boatColor{N}）
+    print(f"[DBG] is-fs12 path boats={len(boats)}")
+
     if not boats:
         for n in range(1, 7):
             tbody = soup.find("tbody", class_=f"is-boatColor{n}")
@@ -149,6 +155,7 @@ def fetch_racelist(date_str: str, race_no: int) -> list[dict]:
             if data:
                 boats.append(data)
 
+    print(f"[DBG] final boats={len(boats)}")
     return sorted(boats, key=lambda x: x["boat_no"])
 
 
@@ -176,10 +183,10 @@ def _parse_tds_legacy(boat_no: int, tds) -> dict | None:
             if re.match(r"^\d+\.\d{2}$", t):
                 nums.append(float(t))
 
-        national_win = nums[0] if len(nums) > 0 else 0.0
-        local_win    = nums[3] if len(nums) > 3 else 0.0
-        motor_rate   = nums[6] if len(nums) > 6 else 0.0
-        st_avg       = nums[10] if len(nums) > 10 else 0.18
+        national_win  = nums[0] if len(nums) > 0 else 0.0
+        local_win     = nums[3] if len(nums) > 3 else 0.0
+        motor_rate    = nums[6] if len(nums) > 6 else 0.0
+        st_avg        = nums[10] if len(nums) > 10 else 0.18
         if st_avg > 1.0:
             st_avg = 0.18
 
